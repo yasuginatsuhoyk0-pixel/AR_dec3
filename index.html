@@ -1,0 +1,3227 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>js-aruco AR 図形切断アプリ - 透明面ソート版</title>
+
+<style>
+body {
+  margin: 0;
+  overflow: hidden;
+  font-family: sans-serif;
+  touch-action: none;
+  background: black;
+}
+
+#container {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: black;
+}
+
+#video {
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+  z-index: 0;
+}
+
+#three-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1;
+  pointer-events: none;
+}
+
+#status-text {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 92%;
+  text-align: center;
+  z-index: 10;
+  background: rgba(0,0,0,0.70);
+  color: white;
+  padding: 10px 15px;
+  border-radius: 5px;
+  font-weight: bold;
+  pointer-events: none;
+  line-height: 1.45;
+}
+
+#ui-container {
+  position: absolute;
+  bottom: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  gap: 10px;
+  background: rgba(255,255,255,0.9);
+  padding: 10px;
+  border-radius: 10px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+
+#manual-controls {
+  position: absolute;
+  bottom: 132px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 92%;
+  z-index: 10;
+  display: none;
+  justify-content: center;
+}
+
+#observation-controls {
+  position: absolute;
+  bottom: 132px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.9);
+  white-space: nowrap;
+}
+
+#observation-controls label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: bold;
+}
+
+#observation-speed {
+  width: 135px;
+  max-width: 24vw;
+  touch-action: pan-x;
+}
+
+#observation-speed-value {
+  min-width: 3.5em;
+}
+
+button {
+  padding: 10px 20px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  border: 2px solid #00aaff;
+  border-radius: 5px;
+  background: white;
+  color: #00aaff;
+  transition: 0.3s;
+}
+
+button.active {
+  background: #00aaff;
+  color: white;
+}
+
+#start-button {
+  position: absolute;
+  z-index: 20;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%,-50%);
+  font-size: 24px;
+  padding: 16px 28px;
+  border-radius: 10px;
+  border: 2px solid #00aaff;
+  background: white;
+  color: #00aaff;
+  font-weight: bold;
+}
+
+#debug-canvas {
+  display: none;
+}
+
+@media (max-width:480px) {
+  #observation-controls {
+    bottom: 118px;
+    gap: 6px;
+    padding: 7px;
+  }
+  #observation-controls button {
+    padding: 8px 10px;
+    font-size: 14px;
+  }
+  #observation-controls label {
+    gap: 4px;
+    font-size: 13px;
+  }
+  #observation-speed {
+    width: 85px;
+    max-width: 22vw;
+  }
+}
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script src="https://cdn.jsdelivr.net/gh/jcmellado/js-aruco@master/src/cv.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/jcmellado/js-aruco@master/src/aruco.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/jcmellado/js-aruco@master/src/svd.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/jcmellado/js-aruco@master/src/posit1.js"></script>
+
+</head>
+<body>
+
+<div id="container">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="debug-canvas"></canvas>
+
+  <div id="status-text">
+    スワイプで角度調整。自由に触ってみよう。
+  </div>
+
+  <div id="manual-controls">
+    <button id="btn-manual">切断をリセット</button>
+  </div>
+
+  <div id="observation-controls">
+    <label for="observation-speed">
+      速度
+      <input id="observation-speed"
+             type="range"
+             min="0.25"
+             max="2"
+             step="0.25"
+             value="1">
+      <span id="observation-speed-value">1.00倍</span>
+    </label>
+    <button id="btn-observation-pause" type="button">
+      一時停止
+    </button>
+  </div>
+
+  <div id="ui-container">
+    <button id="btn-operation" class="active">
+      操作型<br>AR
+    </button>
+    <button id="btn-observation">
+      観察型<br>AR
+    </button>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// =========================================================
+// 設定
+// =========================================================
+
+const TARGET_MARKER_ID = 102;
+const MARKER_SIZE = 1.0;
+
+// 改善①：立方体を元の2/3に縮小
+// 元の値は3.0
+const CUBE_SCALE = 2.0;
+
+const CUBE_SIZE = 0.36 * CUBE_SCALE;
+const CUBE_HALF_SIZE = CUBE_SIZE / 2;
+const FILTER_SCALE = 2.0;
+const LOCAL_FILTER_SIZE = CUBE_SIZE * FILTER_SCALE;
+const LABEL_OFFSET = 0.2016 * CUBE_SCALE;
+const MARKER_RADIUS = 0.016 * CUBE_SCALE;
+
+const CLIP_NEGATE = false;
+
+let currentMode = 'operation';
+let markerVisible = false;
+let operationManualMode = false;
+
+let manualPlaneControlPoints = [];
+let manualMarkerTargetPositions = [];
+let manualHoldPose = null;
+let manualHandleDragIndex = -1;
+let manualMarkerEdgeIndices = [];
+let manualDragState = null;
+
+const MANUAL_MARKER_SMOOTHING = 0.12;
+
+// 改善④⑤：観察型の速度と停止
+let observationSpeed = 1.0;
+let observationPaused = false;
+let observationTime = Date.now() * 0.001;
+let lastAnimationTimestamp = null;
+
+// =========================================================
+// マーカー姿勢安定化：カルマンフィルタ
+// =========================================================
+
+const LOST_POSE_HOLD_FRAMES = 90;
+
+let kalmanResponsivenessLevel = 0;
+let kalmanEnabled = false;
+
+let KALMAN_POSITION_PROCESS_NOISE = 0.18;
+let KALMAN_POSITION_MEASUREMENT_NOISE = 0.020;
+let KALMAN_ROTATION_PROCESS_NOISE = 0.26;
+let KALMAN_ROTATION_MEASUREMENT_NOISE = 0.018;
+
+let poseKalman = null;
+let stablePose = null;
+
+function setKalmanResponsivenessLevel(level) {
+  if (level === 0) {
+    kalmanResponsivenessLevel = 0;
+    kalmanEnabled = false;
+    poseKalman = null;
+    return;
+  }
+
+  kalmanEnabled = true;
+  kalmanResponsivenessLevel = Math.max(1, Math.min(9, level));
+
+  const center = 5;
+  const offset = kalmanResponsivenessLevel - center;
+
+  const basePosQ = 0.160 * 3.30;
+  const baseRotQ = 0.220 * 3.64;
+  const basePosR = 0.018 * 0.49;
+  const baseRotR = 0.016 * 0.495;
+
+  const qStep = 1.28;
+  const rStep = 0.82;
+
+  KALMAN_POSITION_PROCESS_NOISE =
+    basePosQ * Math.pow(qStep, offset);
+
+  KALMAN_ROTATION_PROCESS_NOISE =
+    baseRotQ * Math.pow(qStep, offset);
+
+  KALMAN_POSITION_MEASUREMENT_NOISE =
+    basePosR * Math.pow(rStep, offset);
+
+  KALMAN_ROTATION_MEASUREMENT_NOISE =
+    baseRotR * Math.pow(rStep, offset);
+
+  if (poseKalman) {
+    poseKalman.setNoiseParameters();
+  }
+}
+
+setKalmanResponsivenessLevel(5);
+
+let lastRenderedStablePose = null;
+let lostPoseFrameCount = 0;
+
+// =========================================================
+// DOM
+// =========================================================
+
+const container = document.getElementById('container');
+const video = document.getElementById('video');
+const debugCanvas = document.getElementById('debug-canvas');
+const debugCtx = debugCanvas.getContext('2d', {
+  willReadFrequently: true
+});
+const statusText = document.getElementById('status-text');
+
+const btnOp = document.getElementById('btn-operation');
+const btnOb = document.getElementById('btn-observation');
+const btnManual = document.getElementById('btn-manual');
+const manualControls = document.getElementById('manual-controls');
+
+const observationControls =
+  document.getElementById('observation-controls');
+const observationSpeedInput =
+  document.getElementById('observation-speed');
+const observationSpeedValue =
+  document.getElementById('observation-speed-value');
+const btnObservationPause =
+  document.getElementById('btn-observation-pause');
+
+function updateManualControlVisibility() {
+  manualControls.style.display =
+    currentMode === 'operation' ? 'flex' : 'none';
+
+  observationControls.style.display =
+    currentMode === 'observation' ? 'flex' : 'none';
+}
+
+observationSpeedInput.addEventListener('input', () => {
+  observationSpeed = Number(observationSpeedInput.value);
+  observationSpeedValue.textContent =
+    observationSpeed.toFixed(2) + '倍';
+  updateStatus();
+});
+
+btnObservationPause.addEventListener('click', () => {
+  observationPaused = !observationPaused;
+
+  btnObservationPause.textContent =
+    observationPaused ? '再開' : '一時停止';
+
+  btnObservationPause.classList.toggle(
+    'active',
+    observationPaused
+  );
+
+  updateStatus();
+});
+
+btnOp.addEventListener('click', () => {
+  currentMode = 'operation';
+  btnOp.classList.add('active');
+  btnOb.classList.remove('active');
+
+  obsFilterObject.visible = false;
+
+  exitOperationManualMode();
+
+  if (markerRoot.visible) {
+    enterOperationManualMode();
+  }
+
+  updateManualControlVisibility();
+  updateStatus();
+});
+
+btnOb.addEventListener('click', () => {
+  currentMode = 'observation';
+  btnOb.classList.add('active');
+  btnOp.classList.remove('active');
+  btnManual.classList.remove('active');
+
+  obsFilterObject.visible = true;
+
+  exitOperationManualMode();
+  updateManualControlVisibility();
+  updateStatus();
+});
+
+btnManual.addEventListener('click', () => {
+  if (currentMode !== 'operation') {
+    return;
+  }
+
+  if (operationManualMode) {
+    exitOperationManualMode();
+  }
+
+  enterOperationManualMode();
+});
+
+updateManualControlVisibility();
+
+function updateStatus(extra = '') {
+  if (currentMode === 'operation') {
+    const suffix = operationManualMode
+      ? '赤点をドラッグして切断面を調整／赤点以外をスワイプで回転'
+      : 'マーカーを映すと手動切断が始まります';
+
+    statusText.innerText =
+      `自由に切断してみよう（${suffix}） ${extra}`;
+  } else {
+    statusText.innerText =
+      `切断面がどのような形になるか観察しよう` +
+      `${observationPaused ? '（一時停止中）' : ''} ${extra}`;
+  }
+}
+
+// =========================================================
+// three.js 初期化
+// =========================================================
+
+const renderer = new THREE.WebGLRenderer({
+  alpha: true,
+  antialias: true
+});
+
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.localClippingEnabled = true;
+renderer.sortObjects = true;
+renderer.domElement.id = 'three-canvas';
+container.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(
+  45,
+  window.innerWidth / window.innerHeight,
+  0.01,
+  1000
+);
+
+scene.add(camera);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.32));
+
+const cameraFixedLight =
+  new THREE.DirectionalLight(0xffffff, 1.15);
+
+cameraFixedLight.position.set(-0.37, 0.91, 0.53);
+
+const cameraFixedLightTarget = new THREE.Object3D();
+cameraFixedLightTarget.position.set(0.21, -0.34, -1.00);
+
+camera.add(cameraFixedLight);
+camera.add(cameraFixedLightTarget);
+cameraFixedLight.target = cameraFixedLightTarget;
+
+const markerRoot = new THREE.Group();
+markerRoot.visible = false;
+scene.add(markerRoot);
+
+// =========================================================
+// マーカー隠し用の半透明の白い地面平面
+// =========================================================
+
+const markerGroundSize = MARKER_SIZE * 1.18;
+
+const markerGround = new THREE.Mesh(
+  new THREE.PlaneGeometry(
+    markerGroundSize,
+    markerGroundSize
+  ),
+  new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.72,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    depthTest: true
+  })
+);
+
+markerGround.position.set(0, 0, 0.002);
+markerGround.renderOrder = 1;
+markerGround.frustumCulled = false;
+markerRoot.add(markerGround);
+
+// =========================================================
+// 立方体
+// =========================================================
+
+const cubeGroup = new THREE.Group();
+cubeGroup.position.z = 0.25;
+
+const clipPlane = new THREE.Plane(
+  new THREE.Vector3(0, 0, 1),
+  1000
+);
+
+const cubeFaceMeshes = [];
+const cubeFaceGeo =
+  new THREE.PlaneGeometry(CUBE_SIZE, CUBE_SIZE);
+
+function createCubeFace(name, position, quaternion, color) {
+  const mat = new THREE.MeshLambertMaterial({
+    color,
+    transparent: true,
+    opacity: 0.42,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    depthTest: true,
+    flatShading: true
+  });
+
+  const mesh = new THREE.Mesh(cubeFaceGeo, mat);
+  mesh.name = name;
+  mesh.position.copy(position);
+  mesh.quaternion.copy(quaternion);
+  mesh.renderOrder = 10;
+  cubeGroup.add(mesh);
+  cubeFaceMeshes.push(mesh);
+  return mesh;
+}
+
+const qIdentity = new THREE.Quaternion();
+
+createCubeFace(
+  "front +Z",
+  new THREE.Vector3(0, 0, CUBE_HALF_SIZE),
+  qIdentity,
+  0x00aaff
+);
+
+createCubeFace(
+  "back -Z",
+  new THREE.Vector3(0, 0, -CUBE_HALF_SIZE),
+  new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0),
+    Math.PI
+  ),
+  0x0055aa
+);
+
+createCubeFace(
+  "right +X",
+  new THREE.Vector3(CUBE_HALF_SIZE, 0, 0),
+  new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0),
+    Math.PI / 2
+  ),
+  0x0077cc
+);
+
+createCubeFace(
+  "left -X",
+  new THREE.Vector3(-CUBE_HALF_SIZE, 0, 0),
+  new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0),
+    -Math.PI / 2
+  ),
+  0x0077cc
+);
+
+createCubeFace(
+  "top +Y",
+  new THREE.Vector3(0, CUBE_HALF_SIZE, 0),
+  new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(1, 0, 0),
+    -Math.PI / 2
+  ),
+  0x33bbff
+);
+
+createCubeFace(
+  "bottom -Y",
+  new THREE.Vector3(0, -CUBE_HALF_SIZE, 0),
+  new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(1, 0, 0),
+    Math.PI / 2
+  ),
+  0x004477
+);
+
+cubeFaceMeshes.forEach(mesh => {
+  mesh.visible = false;
+});
+
+// =========================================================
+// 幾何分割された立方体面
+// =========================================================
+
+const dynamicSplitFaceMeshes = [];
+
+function mixHexColors(a, b, t) {
+  const ar = (a >> 16) & 255;
+  const ag = (a >> 8) & 255;
+  const ab = a & 255;
+
+  const br = (b >> 16) & 255;
+  const bg = (b >> 8) & 255;
+  const bb = b & 255;
+
+  const rr = Math.round(ar * (1 - t) + br * t);
+  const rg = Math.round(ag * (1 - t) + bg * t);
+  const rb = Math.round(ab * (1 - t) + bb * t);
+
+  return (rr << 16) | (rg << 8) | rb;
+}
+
+function makeSplitFaceMaterial(color, opacity) {
+  return new THREE.MeshLambertMaterial({
+    color,
+    transparent: true,
+    opacity,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    depthTest: false,
+    flatShading: true
+  });
+}
+
+function setSplitFaceMaterialMode(isObservation) {
+  splitFaces.forEach(face => {
+    [face.frontMesh, face.backMesh].forEach(mesh => {
+      if (!mesh || !mesh.material) return;
+
+      if (isObservation) {
+        mesh.material.transparent = false;
+        mesh.material.opacity = 1.0;
+        mesh.material.depthTest = true;
+        mesh.material.depthWrite = true;
+      } else {
+        const baseOpacity =
+          mesh === face.frontMesh ? 0.42 : 0.48;
+
+        mesh.material.transparent = true;
+        mesh.material.opacity = baseOpacity;
+        mesh.material.depthTest = false;
+        mesh.material.depthWrite = false;
+      }
+
+      mesh.material.needsUpdate = true;
+    });
+  });
+}
+
+function makeDynamicFaceMesh(material) {
+  const mesh = new THREE.Mesh(
+    new THREE.BufferGeometry(),
+    material
+  );
+
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  cubeGroup.add(mesh);
+  dynamicSplitFaceMeshes.push(mesh);
+  return mesh;
+}
+
+function makeFaceRecord(name, color, points) {
+  const frontMat = makeSplitFaceMaterial(color, 0.42);
+  const backMat = makeSplitFaceMaterial(
+    mixHexColors(color, 0xffff00, 0.42),
+    0.48
+  );
+
+  return {
+    name,
+    points,
+    color,
+    frontMesh: makeDynamicFaceMesh(frontMat),
+    backMesh: makeDynamicFaceMesh(backMat)
+  };
+}
+
+const splitFaces = [
+  makeFaceRecord("front +Z", 0x00aaff, [
+    new THREE.Vector3(-CUBE_HALF_SIZE,-CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+    new THREE.Vector3( CUBE_HALF_SIZE,-CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+    new THREE.Vector3( CUBE_HALF_SIZE, CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+    new THREE.Vector3(-CUBE_HALF_SIZE, CUBE_HALF_SIZE, CUBE_HALF_SIZE)
+  ]),
+
+  makeFaceRecord("back -Z", 0x0055aa, [
+    new THREE.Vector3( CUBE_HALF_SIZE,-CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+    new THREE.Vector3(-CUBE_HALF_SIZE,-CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+    new THREE.Vector3(-CUBE_HALF_SIZE, CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+    new THREE.Vector3( CUBE_HALF_SIZE, CUBE_HALF_SIZE,-CUBE_HALF_SIZE)
+  ]),
+
+  makeFaceRecord("right +X", 0x0077cc, [
+    new THREE.Vector3(CUBE_HALF_SIZE,-CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+    new THREE.Vector3(CUBE_HALF_SIZE,-CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+    new THREE.Vector3(CUBE_HALF_SIZE, CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+    new THREE.Vector3(CUBE_HALF_SIZE, CUBE_HALF_SIZE, CUBE_HALF_SIZE)
+  ]),
+
+  makeFaceRecord("left -X", 0x0077cc, [
+    new THREE.Vector3(-CUBE_HALF_SIZE,-CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+    new THREE.Vector3(-CUBE_HALF_SIZE,-CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+    new THREE.Vector3(-CUBE_HALF_SIZE, CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+    new THREE.Vector3(-CUBE_HALF_SIZE, CUBE_HALF_SIZE,-CUBE_HALF_SIZE)
+  ]),
+
+  makeFaceRecord("top +Y", 0x33bbff, [
+    new THREE.Vector3(-CUBE_HALF_SIZE, CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+    new THREE.Vector3( CUBE_HALF_SIZE, CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+    new THREE.Vector3( CUBE_HALF_SIZE, CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+    new THREE.Vector3(-CUBE_HALF_SIZE, CUBE_HALF_SIZE,-CUBE_HALF_SIZE)
+  ]),
+
+  makeFaceRecord("bottom -Y", 0x004477, [
+    new THREE.Vector3(-CUBE_HALF_SIZE,-CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+    new THREE.Vector3( CUBE_HALF_SIZE,-CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+    new THREE.Vector3( CUBE_HALF_SIZE,-CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+    new THREE.Vector3(-CUBE_HALF_SIZE,-CUBE_HALF_SIZE, CUBE_HALF_SIZE)
+  ])
+];
+
+function clearGeometryMesh(mesh) {
+  mesh.geometry.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute([], 3)
+  );
+
+  mesh.geometry.setIndex(null);
+  mesh.visible = false;
+}
+
+function setMeshGeometryFromPolygon(mesh, polygon) {
+  if (!polygon || polygon.length < 3) {
+    clearGeometryMesh(mesh);
+    return;
+  }
+
+  const positions = [];
+
+  for (let i = 1; i < polygon.length - 1; i++) {
+    const tri = [polygon[0], polygon[i], polygon[i + 1]];
+
+    tri.forEach(p => {
+      positions.push(p.x, p.y, p.z);
+    });
+  }
+
+  mesh.geometry.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute(positions, 3)
+  );
+
+  mesh.geometry.setIndex(null);
+  mesh.geometry.computeVertexNormals();
+  mesh.geometry.computeBoundingSphere();
+  mesh.visible = true;
+
+  const center = new THREE.Vector3();
+  polygon.forEach(p => center.add(p));
+  center.divideScalar(polygon.length);
+  mesh.userData.localCenter = center;
+}
+
+function clipPolygonByPlaneForCameraSide(
+  points,
+  planeLocal,
+  cameraSideSign,
+  keepFrontSide
+) {
+  const result = [];
+
+  function signed(p) {
+    return planeLocal.distanceToPoint(p) * cameraSideSign;
+  }
+
+  function inside(d) {
+    return keepFrontSide ? d >= 0 : d <= 0;
+  }
+
+  for (let i = 0; i < points.length; i++) {
+    const j = (i + 1) % points.length;
+
+    const p1 = points[i];
+    const p2 = points[j];
+
+    const d1 = signed(p1);
+    const d2 = signed(p2);
+
+    const in1 = inside(d1);
+    const in2 = inside(d2);
+
+    if (in1) {
+      result.push(p1.clone());
+    }
+
+    if (in1 !== in2) {
+      const denom = d1 - d2;
+      const t = Math.abs(denom) < 1e-8
+        ? 0.0
+        : d1 / denom;
+
+      result.push(p1.clone().lerp(p2, t));
+    }
+  }
+
+  return result;
+}
+
+function sortSplitMeshesBackToFront(meshes, baseOrder) {
+  const camPos = new THREE.Vector3();
+  camera.getWorldPosition(camPos);
+
+  const items = meshes
+    .filter(mesh => mesh.visible)
+    .map(mesh => {
+      const c = mesh.userData.localCenter
+        ? mesh.userData.localCenter.clone()
+        : new THREE.Vector3();
+
+      const world = c.applyMatrix4(cubeGroup.matrixWorld);
+
+      return {
+        mesh,
+        dist: world.distanceToSquared(camPos)
+      };
+    });
+
+  items.sort((a,b) => b.dist - a.dist);
+
+  items.forEach((item,index) => {
+    item.mesh.renderOrder = baseOrder + index;
+  });
+}
+
+function updateSplitCubeFaces(planeLocal) {
+  if (!planeLocal || !markerRoot.visible) {
+    dynamicSplitFaceMeshes.forEach(clearGeometryMesh);
+    return;
+  }
+
+  const camWorld = new THREE.Vector3();
+  camera.getWorldPosition(camWorld);
+
+  const camLocal = cubeGroup.worldToLocal(camWorld.clone());
+
+  let cameraSideSign =
+    Math.sign(planeLocal.distanceToPoint(camLocal));
+
+  if (cameraSideSign === 0) {
+    cameraSideSign = 1;
+  }
+
+  const frontMeshes = [];
+  const backMeshes = [];
+
+  splitFaces.forEach(face => {
+    const frontPoly = clipPolygonByPlaneForCameraSide(
+      face.points,
+      planeLocal,
+      cameraSideSign,
+      true
+    );
+
+    const backPoly = clipPolygonByPlaneForCameraSide(
+      face.points,
+      planeLocal,
+      cameraSideSign,
+      false
+    );
+
+    setMeshGeometryFromPolygon(face.frontMesh, frontPoly);
+    setMeshGeometryFromPolygon(face.backMesh, backPoly);
+
+    if (face.frontMesh.visible) {
+      frontMeshes.push(face.frontMesh);
+    }
+
+    if (face.backMesh.visible) {
+      backMeshes.push(face.backMesh);
+    }
+  });
+
+  sortSplitMeshesBackToFront(backMeshes,20);
+  sortSplitMeshesBackToFront(frontMeshes,90);
+}
+
+// 交差判定用。表示しない。
+const cubeGhost = new THREE.Mesh(
+  new THREE.BoxGeometry(CUBE_SIZE,CUBE_SIZE,CUBE_SIZE),
+  new THREE.MeshBasicMaterial({visible:false})
+);
+
+cubeGroup.add(cubeGhost);
+markerRoot.add(cubeGroup);
+
+// =========================================================
+// 観察型ARの切断面表示（元の黄色・赤枠）
+// =========================================================
+
+const localFilterMat = new THREE.MeshBasicMaterial({
+  color: 0xffff00,
+  transparent: true,
+  opacity: 0.0,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+  depthTest: false
+});
+
+const filterEdgeMat = new THREE.LineBasicMaterial({
+  color: 0xff0000,
+  linewidth: 1,
+  depthTest: false
+});
+
+const obsFilterGeo = new THREE.PlaneGeometry(
+  LOCAL_FILTER_SIZE,
+  LOCAL_FILTER_SIZE
+);
+
+const obsFilterObject = new THREE.Mesh(
+  obsFilterGeo,
+  localFilterMat
+);
+
+obsFilterObject.renderOrder = 30;
+obsFilterObject.frustumCulled = false;
+
+obsFilterObject.add(new THREE.LineSegments(
+  new THREE.EdgesGeometry(obsFilterGeo),
+  filterEdgeMat.clone()
+));
+
+cubeGroup.add(obsFilterObject);
+obsFilterObject.visible = false;
+
+const obsNearPartGeometry = new THREE.BufferGeometry();
+const obsFarPartGeometry = new THREE.BufferGeometry();
+
+const obsNearPart = new THREE.Mesh(
+  obsNearPartGeometry,
+  new THREE.MeshBasicMaterial({
+    color: 0xffff00,
+    transparent: true,
+    opacity: 0.5,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    depthTest: false
+  })
+);
+
+const obsFarPart = new THREE.Mesh(
+  obsFarPartGeometry,
+  new THREE.MeshBasicMaterial({
+    color: 0xffff00,
+    transparent: true,
+    opacity: 0.5,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    depthTest: false
+  })
+);
+
+obsNearPart.renderOrder = 60;
+obsFarPart.renderOrder = 61;
+obsNearPart.frustumCulled = false;
+obsFarPart.frustumCulled = false;
+
+obsNearPart.position.z = 0.0005;
+obsFarPart.position.z = 0.0006;
+
+obsFilterObject.add(obsNearPart);
+obsFilterObject.add(obsFarPart);
+
+function setPolygonGeometryFromLocalPoints(geometry,points) {
+  if (!points || points.length < 3) {
+    geometry.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([],3)
+    );
+
+    geometry.setIndex(null);
+    return;
+  }
+
+  const positions = [];
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const tri = [
+      points[0],
+      points[i],
+      points[i + 1]
+    ];
+
+    tri.forEach(p => {
+      positions.push(p.x,p.y,p.z);
+    });
+  }
+
+  geometry.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute(positions,3)
+  );
+
+  geometry.setIndex(null);
+  geometry.computeBoundingSphere();
+}
+
+function clipScreenPolygonBySignedDistance(
+  localPoints,
+  signedDistances,
+  keepPositive
+) {
+  const result = [];
+
+  function isInside(value) {
+    return keepPositive ? value >= 0 : value <= 0;
+  }
+
+  for (let i = 0; i < localPoints.length; i++) {
+    const j = (i + 1) % localPoints.length;
+
+    const p1 = localPoints[i];
+    const p2 = localPoints[j];
+
+    const d1 = signedDistances[i];
+    const d2 = signedDistances[j];
+
+    const inside1 = isInside(d1);
+    const inside2 = isInside(d2);
+
+    if (inside1) {
+      result.push(p1.clone());
+    }
+
+    if (inside1 !== inside2) {
+      const denom = d1 - d2;
+      const t = Math.abs(denom) < 1e-8
+        ? 0
+        : d1 / denom;
+
+      result.push(p1.clone().lerp(p2,t));
+    }
+  }
+
+  return result;
+}
+
+function updateLocalFilterSplitByMarkerPlane(
+  filterObject,
+  width,
+  height,
+  nearGeometry,
+  farGeometry
+) {
+  const hw = width * 0.5;
+  const hh = height * 0.5;
+
+  const rect = [
+    new THREE.Vector3(-hw,-hh,0.001),
+    new THREE.Vector3( hw,-hh,0.001),
+    new THREE.Vector3( hw, hh,0.001),
+    new THREE.Vector3(-hw, hh,0.001)
+  ];
+
+  if (!markerRoot.visible) {
+    setPolygonGeometryFromLocalPoints(nearGeometry,rect);
+    setPolygonGeometryFromLocalPoints(farGeometry,[]);
+    return;
+  }
+
+  camera.updateMatrixWorld(true);
+  markerRoot.updateMatrixWorld(true);
+  filterObject.updateMatrixWorld(true);
+
+  const camWorld = new THREE.Vector3();
+  camera.getWorldPosition(camWorld);
+
+  const camInMarker = markerRoot.worldToLocal(
+    camWorld.clone()
+  );
+
+  const cameraSide = camInMarker.z >= 0 ? 1 : -1;
+
+  const signed = rect.map(pLocal => {
+    const world = filterObject.localToWorld(
+      pLocal.clone()
+    );
+
+    const markerLocal = markerRoot.worldToLocal(world);
+
+    return cameraSide * markerLocal.z;
+  });
+
+  const nearPoly = clipScreenPolygonBySignedDistance(
+    rect,
+    signed,
+    true
+  );
+
+  const farPoly = clipScreenPolygonBySignedDistance(
+    rect,
+    signed,
+    false
+  );
+
+  setPolygonGeometryFromLocalPoints(nearGeometry,nearPoly);
+  setPolygonGeometryFromLocalPoints(farGeometry,farPoly);
+}
+
+// =========================================================
+// 立方体の辺・ラベル
+// =========================================================
+
+const edges = new THREE.EdgesGeometry(
+  new THREE.BoxGeometry(CUBE_SIZE,CUBE_SIZE,CUBE_SIZE)
+);
+
+const solidMat = new THREE.LineBasicMaterial({
+  color: 0x000000
+});
+
+const solidLines = new THREE.LineSegments(edges,solidMat);
+solidLines.renderOrder = 130;
+
+const dashedMat = new THREE.LineDashedMaterial({
+  color: 0x000000,
+  dashSize: 0.03,
+  gapSize: 0.02,
+  depthTest: true,
+  depthFunc: THREE.GreaterDepth
+});
+
+const dashedLines = new THREE.LineSegments(edges,dashedMat);
+dashedLines.computeLineDistances();
+dashedLines.renderOrder = 131;
+
+cubeGroup.add(solidLines);
+cubeGroup.add(dashedLines);
+
+solidLines.visible = false;
+dashedLines.visible = false;
+
+function addLabel(text,x,y,z) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'black';
+  ctx.font = 'bold 48px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text,32,32);
+
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: new THREE.CanvasTexture(canvas),
+      depthTest: false,
+      transparent: true
+    })
+  );
+
+  sprite.position.set(x,y,z);
+
+  sprite.scale.set(
+    0.12 * CUBE_SCALE,
+    0.12 * CUBE_SCALE,
+    0.12 * CUBE_SCALE
+  );
+
+  sprite.renderOrder = 150;
+  cubeGroup.add(sprite);
+}
+
+const p = LABEL_OFFSET;
+const m = -LABEL_OFFSET;
+
+addLabel('B',m,p,p);
+addLabel('C',p,p,p);
+addLabel('G',p,m,p);
+addLabel('F',m,m,p);
+addLabel('A',m,p,m);
+addLabel('D',p,p,m);
+addLabel('H',p,m,m);
+addLabel('E',m,m,m);
+
+// =========================================================
+// 交点マーカー・交線
+// =========================================================
+
+const markerGeometry =
+  new THREE.SphereGeometry(MARKER_RADIUS);
+
+const markerMatRed = new THREE.MeshBasicMaterial({
+  color: 0xff0000,
+  transparent: true,
+  opacity: 0.95,
+  depthWrite: false
+});
+
+const markerMatGreen = new THREE.MeshBasicMaterial({
+  color: 0xadff2f,
+  transparent: true,
+  opacity: 0.95,
+  depthWrite: false
+});
+
+const markerPoolRed = [];
+let activeMarkersRed = [];
+
+const markerPoolGreen = [];
+let activeMarkersGreen = [];
+
+let manualMarkerTriangle = null;
+
+function ensureManualMarkerTriangle() {
+  if (manualMarkerTriangle) {
+    return manualMarkerTriangle;
+  }
+
+  const mat = new THREE.LineBasicMaterial({
+    color: 0xff0000
+  });
+
+  const geom = new THREE.BufferGeometry();
+
+  manualMarkerTriangle = new THREE.LineLoop(geom,mat);
+  manualMarkerTriangle.visible = false;
+  manualMarkerTriangle.renderOrder = 160;
+
+  cubeGroup.add(manualMarkerTriangle);
+  return manualMarkerTriangle;
+}
+
+function getRedMarker() {
+  if (markerPoolRed.length > 0) {
+    return markerPoolRed.pop();
+  }
+
+  const marker = new THREE.Mesh(
+    markerGeometry,
+    markerMatRed
+  );
+
+  marker.renderOrder = 80;
+  cubeGroup.add(marker);
+  return marker;
+}
+
+function returnRedMarkers() {
+  activeMarkersRed.forEach(marker => {
+    marker.visible = false;
+    markerPoolRed.push(marker);
+  });
+
+  activeMarkersRed = [];
+}
+
+function getGreenMarker() {
+  if (markerPoolGreen.length > 0) {
+    return markerPoolGreen.pop();
+  }
+
+  const marker = new THREE.Mesh(
+    markerGeometry,
+    markerMatGreen
+  );
+
+  marker.renderOrder = 80;
+  cubeGroup.add(marker);
+  return marker;
+}
+
+function returnGreenMarkers() {
+  activeMarkersGreen.forEach(marker => {
+    marker.visible = false;
+    markerPoolGreen.push(marker);
+  });
+
+  activeMarkersGreen = [];
+}
+
+const markerPoolEdgeCenter = [];
+let activeMarkersEdgeCenter = [];
+
+function getEdgeCenterMarker() {
+  if (markerPoolEdgeCenter.length > 0) {
+    return markerPoolEdgeCenter.pop();
+  }
+
+  const markerMatBlack = new THREE.MeshBasicMaterial({
+    color: 0x000000,
+    transparent: true,
+    opacity: 0.8,
+    depthWrite: false
+  });
+
+  const edgeMarkerGeometry = new THREE.SphereGeometry(
+    0.006 * CUBE_SCALE
+  );
+
+  const marker = new THREE.Mesh(
+    edgeMarkerGeometry,
+    markerMatBlack
+  );
+
+  marker.renderOrder = 79;
+  cubeGroup.add(marker);
+  return marker;
+}
+
+function returnEdgeCenterMarkers() {
+  activeMarkersEdgeCenter.forEach(marker => {
+    marker.visible = false;
+    markerPoolEdgeCenter.push(marker);
+  });
+
+  activeMarkersEdgeCenter = [];
+}
+
+const cutLineGeometry = new THREE.BufferGeometry();
+
+const cutLineMaterial = new THREE.LineBasicMaterial({
+  color: 0x000000,
+  linewidth: 1,
+  depthTest: false
+});
+
+const cutLine = new THREE.LineLoop(
+  cutLineGeometry,
+  cutLineMaterial
+);
+
+cutLine.renderOrder = 82;
+cutLine.visible = false;
+cubeGroup.add(cutLine);
+
+const cutLineTubeGroup = new THREE.Group();
+cutLineTubeGroup.visible = false;
+cutLineTubeGroup.renderOrder = 141;
+cubeGroup.add(cutLineTubeGroup);
+
+const cutLineTubeMaterial = new THREE.MeshBasicMaterial({
+  color: 0x000000,
+  transparent: true,
+  opacity: 1.0,
+  depthTest: false,
+  depthWrite: false
+});
+
+function clearCutLineTube() {
+  while (cutLineTubeGroup.children.length > 0) {
+    const child = cutLineTubeGroup.children[0];
+    cutLineTubeGroup.remove(child);
+
+    if (child.geometry) {
+      child.geometry.dispose();
+    }
+  }
+}
+
+function addThickSegment(
+  p1,
+  p2,
+  radius = 0.0024 * CUBE_SCALE
+) {
+  const dir = new THREE.Vector3().subVectors(p2,p1);
+  const length = dir.length();
+
+  if (length < 1e-6) {
+    return;
+  }
+
+  const geometry = new THREE.CylinderGeometry(
+    radius,
+    radius,
+    length,
+    10,
+    1,
+    false
+  );
+
+  const mesh = new THREE.Mesh(
+    geometry,
+    cutLineTubeMaterial
+  );
+
+  mesh.renderOrder = 141;
+
+  const mid = new THREE.Vector3()
+    .addVectors(p1,p2)
+    .multiplyScalar(0.5);
+
+  mesh.position.copy(mid);
+
+  const quat = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0,1,0),
+    dir.clone().normalize()
+  );
+
+  mesh.quaternion.copy(quat);
+  cutLineTubeGroup.add(mesh);
+}
+
+function updateThickCutLine(sortedPts) {
+  clearCutLineTube();
+
+  if (!sortedPts || sortedPts.length < 3) {
+    cutLineTubeGroup.visible = false;
+    return;
+  }
+
+  for (let i = 0; i < sortedPts.length; i++) {
+    const p1 = sortedPts[i];
+    const p2 = sortedPts[(i+1) % sortedPts.length];
+
+    addThickSegment(p1,p2);
+  }
+
+  cutLineTubeGroup.visible = true;
+}
+
+// =========================================================
+// 立方体の頂点・辺
+// =========================================================
+
+const v = [
+  new THREE.Vector3(-CUBE_HALF_SIZE,-CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+  new THREE.Vector3( CUBE_HALF_SIZE,-CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+  new THREE.Vector3( CUBE_HALF_SIZE, CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+  new THREE.Vector3(-CUBE_HALF_SIZE, CUBE_HALF_SIZE,-CUBE_HALF_SIZE),
+
+  new THREE.Vector3(-CUBE_HALF_SIZE,-CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+  new THREE.Vector3( CUBE_HALF_SIZE,-CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+  new THREE.Vector3( CUBE_HALF_SIZE, CUBE_HALF_SIZE, CUBE_HALF_SIZE),
+  new THREE.Vector3(-CUBE_HALF_SIZE, CUBE_HALF_SIZE, CUBE_HALF_SIZE)
+];
+
+const cubeEdges = [
+  [v[0],v[1]],
+  [v[1],v[2]],
+  [v[2],v[3]],
+  [v[3],v[0]],
+
+  [v[4],v[5]],
+  [v[5],v[6]],
+  [v[6],v[7]],
+  [v[7],v[4]],
+
+  [v[0],v[4]],
+  [v[1],v[5]],
+  [v[2],v[6]],
+  [v[3],v[7]]
+];
+
+// =========================================================
+// 立方体のワイヤフレーム
+// =========================================================
+
+const cubeWireTubeGroup = new THREE.Group();
+cubeWireTubeGroup.renderOrder = 139;
+cubeGroup.add(cubeWireTubeGroup);
+
+const cubeWireTubeMaterial = new THREE.MeshBasicMaterial({
+  color: 0x000000,
+  transparent: true,
+  opacity: 1.0,
+  depthTest: false,
+  depthWrite: false
+});
+
+function addTubeSegmentToGroup(
+  group,
+  material,
+  p1,
+  p2,
+  radius = 0.0038 * CUBE_SCALE
+) {
+  const dir = new THREE.Vector3().subVectors(p2,p1);
+  const length = dir.length();
+
+  if (length < 1e-6) {
+    return;
+  }
+
+  const geometry = new THREE.CylinderGeometry(
+    radius,
+    radius,
+    length,
+    10,
+    1,
+    false
+  );
+
+  const mesh = new THREE.Mesh(geometry,material);
+  mesh.renderOrder = group.renderOrder;
+
+  const mid = new THREE.Vector3()
+    .addVectors(p1,p2)
+    .multiplyScalar(0.5);
+
+  mesh.position.copy(mid);
+
+  const quat = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0,1,0),
+    dir.clone().normalize()
+  );
+
+  mesh.quaternion.copy(quat);
+  group.add(mesh);
+}
+
+function buildThickCubeWireframe() {
+  while (cubeWireTubeGroup.children.length > 0) {
+    const child = cubeWireTubeGroup.children[0];
+    cubeWireTubeGroup.remove(child);
+
+    if (child.geometry) {
+      child.geometry.dispose();
+    }
+  }
+
+  cubeEdges.forEach(edge => {
+    addTubeSegmentToGroup(
+      cubeWireTubeGroup,
+      cubeWireTubeMaterial,
+      edge[0],
+      edge[1],
+      0.0038 * CUBE_SCALE
+    );
+  });
+}
+
+buildThickCubeWireframe();
+
+// =========================================================
+// 幾何計算
+// =========================================================
+
+function normalizePlane(plane) {
+  const normalLength = plane.normal.length();
+
+  if (normalLength === 0) {
+    return plane;
+  }
+
+  plane.normal.divideScalar(normalLength);
+  plane.constant /= normalLength;
+
+  return plane;
+}
+
+function setPlaneMeshFromLocalPlane(mesh,planeLocal) {
+  planeLocal.coplanarPoint(mesh.position);
+
+  mesh.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0,0,1),
+    planeLocal.normal.clone().normalize()
+  );
+
+  mesh.updateMatrixWorld(true);
+}
+
+function getIntersectionPointsLocal(planeLocal) {
+  const foundPts = [];
+
+  for (const edge of cubeEdges) {
+    const d1 = planeLocal.distanceToPoint(edge[0]);
+    const d2 = planeLocal.distanceToPoint(edge[1]);
+
+    if (d1 * d2 > 0) {
+      continue;
+    }
+
+    if (
+      Math.abs(d1) < 1e-8 &&
+      Math.abs(d2) < 1e-8
+    ) {
+      addUniquePoint(
+        foundPts,
+        edge[0],
+        0.001 * CUBE_SCALE
+      );
+
+      addUniquePoint(
+        foundPts,
+        edge[1],
+        0.001 * CUBE_SCALE
+      );
+
+      continue;
+    }
+
+    const t = d1-d2 === 0
+      ? 0
+      : d1 / (d1-d2);
+
+    const pt = edge[0].clone().lerp(edge[1],t);
+
+    addUniquePoint(
+      foundPts,
+      pt,
+      0.001 * CUBE_SCALE
+    );
+  }
+
+  return foundPts;
+}
+
+function closestPointOnSegment(point,a,b) {
+  const ab = b.clone().sub(a);
+  const t = ab.dot(point.clone().sub(a)) / ab.dot(ab);
+
+  if (t <= 0) {
+    return a.clone();
+  }
+
+  if (t >= 1) {
+    return b.clone();
+  }
+
+  return a.clone().add(ab.multiplyScalar(t));
+}
+
+function findNearestCubeEdgeIndex(point) {
+  let bestIndex = -1;
+  let bestDist = Infinity;
+
+  for (let i = 0; i < cubeEdges.length; i++) {
+    const [a,b] = cubeEdges[i];
+
+    const closest = closestPointOnSegment(
+      point,a,b
+    );
+
+    const dist = closest.distanceToSquared(point);
+
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIndex = i;
+    }
+  }
+
+  return bestIndex;
+}
+
+function addUniquePoint(points,point,eps) {
+  if (!points.some(p => p.distanceTo(point) < eps)) {
+    points.push(point.clone());
+  }
+}
+
+function sortPointsOnLocalPlane(points,planeLocal) {
+  if (points.length < 3) {
+    return points;
+  }
+
+  const center = new THREE.Vector3();
+
+  for (const p of points) {
+    center.add(p);
+  }
+
+  center.divideScalar(points.length);
+
+  const normal = planeLocal.normal.clone().normalize();
+
+  const tmp = Math.abs(normal.y) < 0.9
+    ? new THREE.Vector3(0,1,0)
+    : new THREE.Vector3(1,0,0);
+
+  const u = new THREE.Vector3()
+    .crossVectors(tmp,normal)
+    .normalize();
+
+  const w = new THREE.Vector3()
+    .crossVectors(normal,u)
+    .normalize();
+
+  const sorted = points.slice();
+
+  sorted.sort((a,b) => {
+    const da = a.clone().sub(center);
+    const db = b.clone().sub(center);
+
+    const angleA = Math.atan2(
+      da.dot(w),
+      da.dot(u)
+    );
+
+    const angleB = Math.atan2(
+      db.dot(w),
+      db.dot(u)
+    );
+
+    return angleA-angleB;
+  });
+
+  return sorted;
+}
+
+// =========================================================
+// 交点マーカーの表示
+// =========================================================
+
+function updateIntersectionMarkers(
+  points,
+  referenceRedPoints = []
+) {
+  returnRedMarkers();
+  returnGreenMarkers();
+
+  if (points.length === 0) {
+    return;
+  }
+
+  if (referenceRedPoints.length > 0) {
+    referenceRedPoints.forEach(pt => {
+      const marker = getRedMarker();
+      marker.position.copy(pt);
+      marker.visible = true;
+      activeMarkersRed.push(marker);
+    });
+
+    points.forEach(pt => {
+      const isReference = referenceRedPoints.some(
+        rp => rp.distanceTo(pt) < 0.005 * CUBE_SCALE
+      );
+
+      if (!isReference) {
+        const marker = getGreenMarker();
+        marker.position.copy(pt);
+        marker.visible = true;
+        activeMarkersGreen.push(marker);
+      }
+    });
+  } else {
+    points.forEach((pt,index) => {
+      if (index < 3) {
+        const marker = getRedMarker();
+        marker.position.copy(pt);
+        marker.visible = true;
+        activeMarkersRed.push(marker);
+      } else {
+        const marker = getGreenMarker();
+        marker.position.copy(pt);
+        marker.visible = true;
+        activeMarkersGreen.push(marker);
+      }
+    });
+  }
+
+  const tri = ensureManualMarkerTriangle();
+
+  if (
+    activeMarkersRed.length >= 3 &&
+    operationManualMode
+  ) {
+    const positions = new Float32Array(9);
+
+    for (let i = 0; i < 3; i++) {
+      const p = activeMarkersRed[i].position;
+      positions[i*3+0] = p.x;
+      positions[i*3+1] = p.y;
+      positions[i*3+2] = p.z;
+    }
+
+    tri.geometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(positions,3)
+    );
+
+    tri.geometry.computeBoundingSphere();
+    tri.visible = true;
+  } else {
+    tri.visible = false;
+  }
+}
+
+function updateIntersectionMarkersFromManual(
+  points,
+  manualRedPoints
+) {
+  returnGreenMarkers();
+
+  if (!manualRedPoints || manualRedPoints.length < 3) {
+    return;
+  }
+
+  for (let i = 0; i < 3; i++) {
+    let marker = activeMarkersRed[i];
+
+    if (!marker) {
+      marker = getRedMarker();
+      activeMarkersRed.push(marker);
+    }
+
+    marker.position.copy(manualRedPoints[i]);
+    marker.visible = true;
+  }
+
+  const eps = 0.005 * CUBE_SCALE;
+
+  for (const pt of points) {
+    const isRef = manualRedPoints.some(
+      rp => rp.distanceTo(pt) < eps
+    );
+
+    if (!isRef) {
+      const marker = getGreenMarker();
+      marker.position.copy(pt);
+      marker.visible = true;
+      activeMarkersGreen.push(marker);
+    }
+  }
+
+  const tri = ensureManualMarkerTriangle();
+  const positions = new Float32Array(9);
+
+  for (let i = 0; i < 3; i++) {
+    const p = activeMarkersRed[i].position;
+    positions[i*3+0] = p.x;
+    positions[i*3+1] = p.y;
+    positions[i*3+2] = p.z;
+  }
+
+  tri.geometry.setAttribute(
+    'position',
+    new THREE.BufferAttribute(positions,3)
+  );
+
+  tri.geometry.computeBoundingSphere();
+  tri.visible = false;
+}
+
+function updateCutLine(points,planeLocal) {
+  if (points.length >= 3) {
+    const sortedPts = sortPointsOnLocalPlane(
+      points,
+      planeLocal
+    );
+
+    cutLineGeometry.setFromPoints(sortedPts);
+    cutLineGeometry.attributes.position.needsUpdate = true;
+    cutLineGeometry.computeBoundingSphere();
+
+    cutLine.visible = true;
+    updateThickCutLine(sortedPts);
+  } else {
+    cutLine.visible = false;
+    updateThickCutLine([]);
+  }
+}
+
+function clearIntersectionDisplay() {
+  returnRedMarkers();
+  returnGreenMarkers();
+
+  cutLine.visible = false;
+  updateThickCutLine([]);
+}
+
+function sortTransparentFacesBackToFront() {
+  if (!markerRoot.visible) {
+    return;
+  }
+
+  const camPos = new THREE.Vector3();
+  camera.getWorldPosition(camPos);
+
+  const tempPos = new THREE.Vector3();
+
+  const items = cubeFaceMeshes.map(mesh => {
+    mesh.getWorldPosition(tempPos);
+
+    return {
+      mesh,
+      dist: tempPos.distanceToSquared(camPos)
+    };
+  });
+
+  items.sort((a,b) => b.dist-a.dist);
+
+  items.forEach((item,index) => {
+    item.mesh.renderOrder = 10+index;
+  });
+
+  if (obsFilterObject.visible) {
+    obsFilterObject.getWorldPosition(tempPos);
+
+    obsFilterObject.renderOrder =
+      10 + items.length + 1;
+  }
+}
+
+// =========================================================
+// 手動切断の初期化
+// =========================================================
+
+function updateEdgeCenterMarkers() {
+  returnEdgeCenterMarkers();
+
+  if (!operationManualMode) {
+    return;
+  }
+
+  for (const edge of cubeEdges) {
+    const center = edge[0].clone()
+      .add(edge[1])
+      .multiplyScalar(0.5);
+
+    const marker = getEdgeCenterMarker();
+    marker.position.copy(center);
+    marker.visible = true;
+    activeMarkersEdgeCenter.push(marker);
+  }
+}
+
+function enterOperationManualMode() {
+  if (operationManualMode) {
+    return;
+  }
+
+  if (!markerRoot.visible) {
+    updateStatus('マーカー未認識時は手動切断できません。');
+    return;
+  }
+
+  manualSwipeQuat.identity();
+  cubeGroup.quaternion.identity();
+
+  cubeGroup.updateMatrixWorld(true);
+
+  const cubeCenterWorld = cubeGroup.getWorldPosition(
+    new THREE.Vector3()
+  );
+
+  const camDirWorld = camera.getWorldDirection(
+    new THREE.Vector3()
+  );
+
+  const planeWorld = new THREE.Plane()
+    .setFromNormalAndCoplanarPoint(
+      camDirWorld,
+      cubeCenterWorld
+    );
+
+  const inv = new THREE.Matrix4()
+    .copy(cubeGroup.matrixWorld)
+    .invert();
+
+  const planeLocal = planeWorld.clone().applyMatrix4(inv);
+
+  let pts = getIntersectionPointsLocal(planeLocal);
+
+  if (pts.length >= 3) {
+    pts = sortPointsOnLocalPlane(pts,planeLocal);
+
+    manualPlaneControlPoints = [
+      pts[0].clone(),
+      pts[1].clone(),
+      pts[2].clone()
+    ];
+  } else {
+    const h = CUBE_HALF_SIZE;
+
+    manualPlaneControlPoints = [
+      new THREE.Vector3(-h,-h,0),
+      new THREE.Vector3( h,-h,0),
+      new THREE.Vector3( h, h,0)
+    ];
+  }
+
+  manualMarkerTargetPositions =
+    manualPlaneControlPoints.map(pt => pt.clone());
+
+  manualMarkerEdgeIndices =
+    manualPlaneControlPoints.map(
+      pt => findNearestCubeEdgeIndex(pt)
+    );
+
+  manualHoldPose = clonePose(
+    lastRenderedStablePose || stablePose
+  );
+
+  if (manualHoldPose) {
+    applyPoseToMarkerRoot(manualHoldPose);
+  }
+
+  operationManualMode = true;
+  btnManual.classList.add('active');
+
+  updateStatus();
+  updateEdgeCenterMarkers();
+}
+
+function exitOperationManualMode() {
+  if (!operationManualMode) {
+    return;
+  }
+
+  operationManualMode = false;
+  manualPlaneControlPoints = [];
+  manualMarkerTargetPositions = [];
+  manualMarkerEdgeIndices = [];
+  manualHandleDragIndex = -1;
+  manualDragState = null;
+
+  manualSwipeQuat.identity();
+
+  btnManual.classList.remove('active');
+
+  if (manualMarkerTriangle) {
+    manualMarkerTriangle.visible = false;
+  }
+
+  returnEdgeCenterMarkers();
+  updateStatus();
+}
+
+// =========================================================
+// マウス・タッチ操作
+// =========================================================
+
+let isDragging = false;
+
+let previousMousePosition = {x:0,y:0};
+let pointerDownPosition = {x:0,y:0};
+let activePointerId = null;
+
+let obsSwipeQuat = new THREE.Quaternion();
+let manualSwipeQuat = new THREE.Quaternion();
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+// 改善③：赤点以外の場所をスワイプすると回転
+window.addEventListener('pointerdown', e => {
+  if (
+    e.target.closest(
+      '#ui-container,#manual-controls,#observation-controls'
+    )
+  ) {
+    return;
+  }
+
+  if (activePointerId !== null) {
+    return;
+  }
+
+  activePointerId = e.pointerId;
+  isDragging = true;
+
+  previousMousePosition = {
+    x:e.clientX,
+    y:e.clientY
+  };
+
+  pointerDownPosition = {
+    x:e.clientX,
+    y:e.clientY
+  };
+
+  manualHandleDragIndex = -1;
+
+  if (
+    operationManualMode &&
+    currentMode === 'operation'
+  ) {
+    camera.updateMatrixWorld(true);
+    cubeGroup.updateMatrixWorld(true);
+
+    const hitRadiusPx = 36;
+    let nearestPx = hitRadiusPx;
+
+    for (let i = 0; i < activeMarkersRed.length; i++) {
+      const marker = activeMarkersRed[i];
+
+      if (!marker.visible) {
+        continue;
+      }
+
+      const projected = marker.getWorldPosition(
+        new THREE.Vector3()
+      ).project(camera);
+
+      const sx =
+        (projected.x+1)*0.5*window.innerWidth;
+
+      const sy =
+        (1-projected.y)*0.5*window.innerHeight;
+
+      const dist = Math.hypot(
+        e.clientX-sx,
+        e.clientY-sy
+      );
+
+      if (dist < nearestPx) {
+        nearestPx = dist;
+        manualHandleDragIndex = i;
+      }
+    }
+
+    manualDragState = null;
+  }
+});
+
+window.addEventListener('pointermove', e => {
+  if (!isDragging) {
+    return;
+  }
+
+  if (activePointerId !== e.pointerId) {
+    return;
+  }
+
+  if (operationManualMode && currentMode === 'operation') {
+
+    // 赤点をドラッグして切断面を変更
+    if (manualHandleDragIndex >= 0) {
+      mouse.x =
+        (e.clientX/window.innerWidth)*2-1;
+
+      mouse.y =
+        -(e.clientY/window.innerHeight)*2+1;
+
+      raycaster.setFromCamera(mouse,camera);
+
+      // 元の立方体面を使ってドラッグ位置を求める
+      const faceHits = raycaster.intersectObjects(
+        cubeFaceMeshes,
+        true
+      );
+
+      let surfaceWorld = null;
+
+      if (faceHits.length > 0) {
+        let bestHit = faceHits[0];
+        let bestHitScore = Infinity;
+
+        for (const fh of faceHits) {
+          const candLocal = cubeGroup.worldToLocal(
+            fh.point.clone()
+          );
+
+          let nearestEdgePoint = null;
+          let bestEdgeDistSq = Infinity;
+
+          for (let ei = 0; ei < cubeEdges.length; ei++) {
+            const [a,b] = cubeEdges[ei];
+
+            const cp = closestPointOnSegment(
+              candLocal,a,b
+            );
+
+            const d2 = cp.distanceToSquared(candLocal);
+
+            if (d2 < bestEdgeDistSq) {
+              bestEdgeDistSq = d2;
+              nearestEdgePoint = cp;
+            }
+          }
+
+          let nearestVertexPoint = null;
+          let bestVertexDist = Infinity;
+
+          for (let vi = 0; vi < v.length; vi++) {
+            const d2 = v[vi].distanceToSquared(candLocal);
+
+            if (d2 < bestVertexDist) {
+              bestVertexDist = d2;
+              nearestVertexPoint = v[vi].clone();
+            }
+          }
+
+          function toScreenPx(worldPt) {
+            const p = worldPt.clone().project(camera);
+
+            return {
+              x:(p.x+1)*0.5*window.innerWidth,
+              y:(1-p.y)*0.5*window.innerHeight
+            };
+          }
+
+          const edgeScreen = nearestEdgePoint
+            ? toScreenPx(
+                cubeGroup.localToWorld(
+                  nearestEdgePoint.clone()
+                )
+              )
+            : null;
+
+          const vertScreen = nearestVertexPoint
+            ? toScreenPx(
+                cubeGroup.localToWorld(
+                  nearestVertexPoint.clone()
+                )
+              )
+            : null;
+
+          let score = Infinity;
+
+          if (edgeScreen) {
+            score = Math.min(
+              score,
+              Math.hypot(
+                e.clientX-edgeScreen.x,
+                e.clientY-edgeScreen.y
+              )
+            );
+          }
+
+          if (vertScreen) {
+            score = Math.min(
+              score,
+              Math.hypot(
+                e.clientX-vertScreen.x,
+                e.clientY-vertScreen.y
+              )
+            );
+          }
+
+          if (score < bestHitScore) {
+            bestHitScore = score;
+            bestHit = fh;
+          }
+        }
+
+        surfaceWorld = bestHit.point.clone();
+      } else {
+        const cubeCenterWorld =
+          cubeGroup.getWorldPosition(new THREE.Vector3());
+
+        const camDir =
+          camera.getWorldDirection(new THREE.Vector3());
+
+        const cursorPlane = new THREE.Plane()
+          .setFromNormalAndCoplanarPoint(
+            camDir,
+            cubeCenterWorld
+          );
+
+        const cursorWorld = new THREE.Vector3();
+
+        if (
+          raycaster.ray.intersectPlane(
+            cursorPlane,
+            cursorWorld
+          )
+        ) {
+          surfaceWorld = cursorWorld.clone();
+        }
+      }
+
+      if (surfaceWorld) {
+        const surfaceLocal = cubeGroup.worldToLocal(
+          surfaceWorld.clone()
+        );
+
+        let bestEdge = -1;
+        let bestEdgeDist = Infinity;
+        let bestEdgePoint = null;
+
+        for (let ei = 0; ei < cubeEdges.length; ei++) {
+          const [a,b] = cubeEdges[ei];
+
+          const cp = closestPointOnSegment(
+            surfaceLocal,a,b
+          );
+
+          const d2 = cp.distanceToSquared(surfaceLocal);
+
+          if (d2 < bestEdgeDist) {
+            bestEdgeDist = d2;
+            bestEdge = ei;
+            bestEdgePoint = cp;
+          }
+        }
+
+        let bestVertexDist = Infinity;
+        let bestVertexPoint = null;
+
+        for (let vi = 0; vi < v.length; vi++) {
+          const d2 = v[vi].distanceToSquared(
+            surfaceLocal
+          );
+
+          if (d2 < bestVertexDist) {
+            bestVertexDist = d2;
+            bestVertexPoint = v[vi].clone();
+          }
+        }
+
+        function toScreenPx(worldPt) {
+          const p = worldPt.clone().project(camera);
+
+          return {
+            x:(p.x+1)*0.5*window.innerWidth,
+            y:(1-p.y)*0.5*window.innerHeight
+          };
+        }
+
+        const edgeScreen = bestEdgePoint
+          ? toScreenPx(
+              cubeGroup.localToWorld(
+                bestEdgePoint.clone()
+              )
+            )
+          : null;
+
+        const vertScreen = bestVertexPoint
+          ? toScreenPx(
+              cubeGroup.localToWorld(
+                bestVertexPoint.clone()
+              )
+            )
+          : null;
+
+        const edgeDist = edgeScreen
+          ? Math.hypot(
+              e.clientX-edgeScreen.x,
+              e.clientY-edgeScreen.y
+            )
+          : Infinity;
+
+        const vertDist = vertScreen
+          ? Math.hypot(
+              e.clientX-vertScreen.x,
+              e.clientY-vertScreen.y
+            )
+          : Infinity;
+
+        const VERTEX_SNAP_PX = 28;
+
+        let targetLocal;
+
+        if (
+          vertDist <= VERTEX_SNAP_PX &&
+          bestVertexPoint
+        ) {
+          targetLocal = bestVertexPoint.clone();
+        } else {
+          targetLocal = bestEdgePoint
+            ? bestEdgePoint.clone()
+            : surfaceLocal.clone();
+        }
+
+        manualPlaneControlPoints[
+          manualHandleDragIndex
+        ].copy(targetLocal);
+
+        manualMarkerTargetPositions[
+          manualHandleDragIndex
+        ].copy(targetLocal);
+
+        if (bestEdge >= 0) {
+          manualMarkerEdgeIndices[
+            manualHandleDragIndex
+          ] = bestEdge;
+        }
+
+        updateOperationMode();
+      }
+
+    } else {
+      // 赤点以外の場所では立方体を回転
+      const deltaX =
+        e.clientX-previousMousePosition.x;
+
+      const deltaY =
+        e.clientY-previousMousePosition.y;
+
+      if (
+        Math.abs(deltaX)>0.1 ||
+        Math.abs(deltaY)>0.1
+      ) {
+        const qY = new THREE.Quaternion()
+          .setFromAxisAngle(
+            new THREE.Vector3(0,1,0),
+            deltaX*0.01
+          );
+
+        const qX = new THREE.Quaternion()
+          .setFromAxisAngle(
+            new THREE.Vector3(1,0,0),
+            deltaY*0.01
+          );
+
+        const deltaQ = new THREE.Quaternion()
+          .multiplyQuaternions(qY,qX);
+
+        manualSwipeQuat.premultiply(deltaQ);
+
+        updateOperationMode();
+      }
+    }
+
+    previousMousePosition = {
+      x:e.clientX,
+      y:e.clientY
+    };
+
+    return;
+  }
+
+  // 観察型の従来の回転処理
+  const deltaX = e.clientX-previousMousePosition.x;
+  const deltaY = e.clientY-previousMousePosition.y;
+
+  const qY = new THREE.Quaternion()
+    .setFromAxisAngle(
+      new THREE.Vector3(0,1,0),
+      deltaX*0.01
+    );
+
+  const qX = new THREE.Quaternion()
+    .setFromAxisAngle(
+      new THREE.Vector3(1,0,0),
+      deltaY*0.01
+    );
+
+  const deltaQ = new THREE.Quaternion()
+    .multiplyQuaternions(qY,qX);
+
+  if (currentMode === 'observation') {
+    obsSwipeQuat.premultiply(deltaQ);
+    updateObservationMode();
+  }
+
+  previousMousePosition = {
+    x:e.clientX,
+    y:e.clientY
+  };
+});
+
+window.addEventListener('pointerup', e => {
+  if (activePointerId !== e.pointerId) {
+    return;
+  }
+
+  isDragging = false;
+  activePointerId = null;
+  manualHandleDragIndex = -1;
+  manualDragState = null;
+
+  const tapDistance = Math.hypot(
+    e.clientX-pointerDownPosition.x,
+    e.clientY-pointerDownPosition.y
+  );
+
+  if (tapDistance >= 10) {
+    return;
+  }
+
+  if (currentMode === 'observation') {
+    obsSwipeQuat.identity();
+    updateObservationMode();
+    updateStatus(' 観察型ビューをリセットしました。');
+  }
+});
+
+window.addEventListener('pointercancel', e => {
+  if (activePointerId !== e.pointerId) {
+    return;
+  }
+
+  isDragging = false;
+  activePointerId = null;
+  manualHandleDragIndex = -1;
+});
+
+window.addEventListener('keydown', e => {
+  if (/^Digit[0-9]$/.test(e.code)) {
+    const digit = e.code.replace('Digit','');
+    const level = digit === '0'
+      ? 0
+      : Number(digit);
+
+    setKalmanResponsivenessLevel(level);
+    e.preventDefault();
+  }
+});
+
+// =========================================================
+// 操作型AR：手動切断のみ
+// =========================================================
+
+function updateOperationMode() {
+  obsFilterObject.visible = false;
+
+  if (
+    !markerRoot.visible ||
+    !operationManualMode ||
+    manualPlaneControlPoints.length !== 3
+  ) {
+    return;
+  }
+
+  cubeGroup.quaternion.copy(manualSwipeQuat);
+  cubeGroup.updateMatrixWorld(true);
+
+  const p1 = manualPlaneControlPoints[0];
+  const p2 = manualPlaneControlPoints[1];
+  const p3 = manualPlaneControlPoints[2];
+
+  const normal = new THREE.Vector3()
+    .subVectors(p2,p1)
+    .cross(
+      new THREE.Vector3().subVectors(p3,p1)
+    );
+
+  if (normal.lengthSq() < 1e-12) {
+    updateIntersectionMarkersFromManual(
+      [],
+      manualPlaneControlPoints
+    );
+
+    cutLine.visible = false;
+    updateThickCutLine([]);
+    return;
+  }
+
+  const localPlane = normalizePlane(
+    new THREE.Plane().setFromCoplanarPoints(
+      p1,p2,p3
+    )
+  );
+
+  updateSplitCubeFaces(localPlane);
+  setSplitFaceMaterialMode(false);
+
+  const foundPts = getIntersectionPointsLocal(localPlane);
+
+  updateIntersectionMarkersFromManual(
+    foundPts,
+    manualPlaneControlPoints
+  );
+
+  updateCutLine(foundPts,localPlane);
+}
+
+// =========================================================
+// 観察型AR：自動切断
+// =========================================================
+
+function updateObservationMode() {
+  obsFilterObject.visible = true;
+
+  cubeGroup.quaternion.copy(obsSwipeQuat);
+  cubeGroup.updateMatrixWorld(true);
+
+  // 改善④⑤：速度調整・停止可能な時間
+  const time = observationTime;
+
+  const t1 = (Math.sin(time*0.7)+1)/2;
+  const p1 = v[0].clone().lerp(v[3],t1);
+
+  const t2 = (Math.sin(time*0.5)+1)/2;
+  const p2 = v[1].clone().lerp(v[5],t2);
+
+  const t3 = (Math.sin(time*0.3)+1)/2;
+  const p3 = v[7].clone().lerp(v[6],t3);
+
+  const localPlane = normalizePlane(
+    new THREE.Plane().setFromCoplanarPoints(
+      p1,p2,p3
+    )
+  );
+
+  setPlaneMeshFromLocalPlane(
+    obsFilterObject,
+    localPlane
+  );
+
+  obsFilterObject.scale.set(1,1,1);
+  obsFilterObject.updateMatrixWorld(true);
+
+  updateLocalFilterSplitByMarkerPlane(
+    obsFilterObject,
+    LOCAL_FILTER_SIZE,
+    LOCAL_FILTER_SIZE,
+    obsNearPartGeometry,
+    obsFarPartGeometry
+  );
+
+  const worldPlaneObs = normalizePlane(
+    localPlane.clone().applyMatrix4(
+      cubeGroup.matrixWorld
+    )
+  );
+
+  if (CLIP_NEGATE) {
+    worldPlaneObs.negate();
+  }
+
+  clipPlane.copy(worldPlaneObs);
+
+  const foundPts = getIntersectionPointsLocal(localPlane);
+
+  updateSplitCubeFaces(localPlane);
+  setSplitFaceMaterialMode(false);
+
+  updateIntersectionMarkers(
+    foundPts,
+    [p1,p2,p3]
+  );
+
+  updateCutLine(foundPts,localPlane);
+}
+
+// =========================================================
+// カルマンフィルタ
+// =========================================================
+
+function normalizeAngleNear(angle,reference) {
+  let a = angle;
+
+  while (a-reference > Math.PI) {
+    a -= Math.PI*2;
+  }
+
+  while (a-reference < -Math.PI) {
+    a += Math.PI*2;
+  }
+
+  return a;
+}
+
+function makePoseFromRotationTranslation(
+  rotation,
+  translation
+) {
+  const euler = new THREE.Euler(
+    -Math.asin(-rotation[1][2]),
+    -Math.atan2(rotation[0][2],rotation[2][2]),
+    Math.atan2(rotation[1][0],rotation[1][1]),
+    'XYZ'
+  );
+
+  const quaternion = new THREE.Quaternion()
+    .setFromEuler(euler)
+    .normalize();
+
+  const position = new THREE.Vector3(
+    translation[0],
+    translation[1],
+    -translation[2]
+  );
+
+  return {
+    position,
+    euler:new THREE.Vector3(
+      euler.x,euler.y,euler.z
+    ),
+    quaternion,
+    time:performance.now()
+  };
+}
+
+class Kalman1D {
+  constructor(processNoise,measurementNoise) {
+    this.q = processNoise;
+    this.r = measurementNoise;
+
+    this.x = 0;
+    this.v = 0;
+
+    this.p00 = 1;
+    this.p01 = 0;
+    this.p10 = 0;
+    this.p11 = 1;
+
+    this.initialized = false;
+  }
+
+  setNoise(processNoise,measurementNoise) {
+    this.q = processNoise;
+    this.r = measurementNoise;
+  }
+
+  reset(value) {
+    this.x = value;
+    this.v = 0;
+
+    this.p00 = 0.05;
+    this.p01 = 0;
+    this.p10 = 0;
+    this.p11 = 0.05;
+
+    this.initialized = true;
+  }
+
+  update(measurement,dt) {
+    if (!this.initialized) {
+      this.reset(measurement);
+      return this.x;
+    }
+
+    dt = Math.max(1/120,Math.min(0.12,dt));
+
+    this.x = this.x+this.v*dt;
+
+    const p00 =
+      this.p00+
+      dt*(this.p10+this.p01)+
+      dt*dt*this.p11+
+      this.q*dt*dt;
+
+    const p01 = this.p01+dt*this.p11;
+    const p10 = this.p10+dt*this.p11;
+    const p11 = this.p11+this.q*dt;
+
+    this.p00 = p00;
+    this.p01 = p01;
+    this.p10 = p10;
+    this.p11 = p11;
+
+    const y = measurement-this.x;
+    const s = this.p00+this.r;
+    const k0 = this.p00/s;
+    const k1 = this.p10/s;
+
+    this.x = this.x+k0*y;
+    this.v = this.v+k1*y;
+
+    const np00 = (1-k0)*this.p00;
+    const np01 = (1-k0)*this.p01;
+    const np10 = this.p10-k1*this.p00;
+    const np11 = this.p11-k1*this.p01;
+
+    this.p00 = np00;
+    this.p01 = np01;
+    this.p10 = np10;
+    this.p11 = np11;
+
+    return this.x;
+  }
+}
+
+class PoseKalmanFilter {
+  constructor() {
+    this.positionFilters = [
+      new Kalman1D(
+        KALMAN_POSITION_PROCESS_NOISE,
+        KALMAN_POSITION_MEASUREMENT_NOISE
+      ),
+      new Kalman1D(
+        KALMAN_POSITION_PROCESS_NOISE,
+        KALMAN_POSITION_MEASUREMENT_NOISE
+      ),
+      new Kalman1D(
+        KALMAN_POSITION_PROCESS_NOISE,
+        KALMAN_POSITION_MEASUREMENT_NOISE
+      )
+    ];
+
+    this.rotationFilters = [
+      new Kalman1D(
+        KALMAN_ROTATION_PROCESS_NOISE,
+        KALMAN_ROTATION_MEASUREMENT_NOISE
+      ),
+      new Kalman1D(
+        KALMAN_ROTATION_PROCESS_NOISE,
+        KALMAN_ROTATION_MEASUREMENT_NOISE
+      ),
+      new Kalman1D(
+        KALMAN_ROTATION_PROCESS_NOISE,
+        KALMAN_ROTATION_MEASUREMENT_NOISE
+      )
+    ];
+
+    this.lastTime = null;
+    this.lastEuler = null;
+  }
+
+  setNoiseParameters() {
+    this.positionFilters.forEach(filter => {
+      filter.setNoise(
+        KALMAN_POSITION_PROCESS_NOISE,
+        KALMAN_POSITION_MEASUREMENT_NOISE
+      );
+    });
+
+    this.rotationFilters.forEach(filter => {
+      filter.setNoise(
+        KALMAN_ROTATION_PROCESS_NOISE,
+        KALMAN_ROTATION_MEASUREMENT_NOISE
+      );
+    });
+  }
+
+  reset(pose) {
+    this.positionFilters[0].reset(pose.position.x);
+    this.positionFilters[1].reset(pose.position.y);
+    this.positionFilters[2].reset(pose.position.z);
+
+    this.rotationFilters[0].reset(pose.euler.x);
+    this.rotationFilters[1].reset(pose.euler.y);
+    this.rotationFilters[2].reset(pose.euler.z);
+
+    this.lastEuler = pose.euler.clone();
+    this.lastTime = pose.time;
+  }
+
+  update(pose) {
+    if (
+      this.lastTime === null ||
+      this.lastEuler === null
+    ) {
+      this.reset(pose);
+    }
+
+    const dt = Math.max(
+      1/120,
+      (pose.time-this.lastTime)/1000
+    );
+
+    this.lastTime = pose.time;
+
+    const eulerMeas = new THREE.Vector3(
+      normalizeAngleNear(
+        pose.euler.x,
+        this.lastEuler.x
+      ),
+      normalizeAngleNear(
+        pose.euler.y,
+        this.lastEuler.y
+      ),
+      normalizeAngleNear(
+        pose.euler.z,
+        this.lastEuler.z
+      )
+    );
+
+    const pos = new THREE.Vector3(
+      this.positionFilters[0].update(
+        pose.position.x,dt
+      ),
+      this.positionFilters[1].update(
+        pose.position.y,dt
+      ),
+      this.positionFilters[2].update(
+        pose.position.z,dt
+      )
+    );
+
+    const eulerFiltered = new THREE.Vector3(
+      this.rotationFilters[0].update(
+        eulerMeas.x,dt
+      ),
+      this.rotationFilters[1].update(
+        eulerMeas.y,dt
+      ),
+      this.rotationFilters[2].update(
+        eulerMeas.z,dt
+      )
+    );
+
+    this.lastEuler.copy(eulerFiltered);
+
+    const euler = new THREE.Euler(
+      eulerFiltered.x,
+      eulerFiltered.y,
+      eulerFiltered.z,
+      'XYZ'
+    );
+
+    const quat = new THREE.Quaternion()
+      .setFromEuler(euler)
+      .normalize();
+
+    return {
+      position:pos,
+      euler:eulerFiltered,
+      quaternion:quat,
+      time:pose.time
+    };
+  }
+}
+
+function clonePose(pose) {
+  if (!pose) {
+    return null;
+  }
+
+  return {
+    position:pose.position.clone(),
+    euler:pose.euler
+      ? pose.euler.clone()
+      : new THREE.Vector3(),
+    quaternion:pose.quaternion.clone().normalize(),
+    time:pose.time
+  };
+}
+
+function updateStablePoseWithKalman(measuredPose) {
+  if (!kalmanEnabled) {
+    stablePose = clonePose(measuredPose);
+    return stablePose;
+  }
+
+  if (!poseKalman) {
+    poseKalman = new PoseKalmanFilter();
+  }
+
+  stablePose = poseKalman.update(measuredPose);
+  return stablePose;
+}
+
+function applyPoseToMarkerRoot(pose) {
+  if (!pose) {
+    return false;
+  }
+
+  markerRoot.position.copy(pose.position);
+  markerRoot.quaternion.copy(pose.quaternion);
+  markerRoot.visible = true;
+  markerVisible = true;
+
+  lastRenderedStablePose = clonePose(pose);
+
+  return true;
+}
+
+function applyStablePoseToMarkerRoot() {
+  return applyPoseToMarkerRoot(stablePose);
+}
+
+function applyLastRenderedStablePoseToMarkerRoot() {
+  return applyPoseToMarkerRoot(
+    lastRenderedStablePose
+  );
+}
+
+// =========================================================
+// js-aruco 検出・姿勢推定
+// =========================================================
+
+const detector = new AR.Detector();
+let posit = null;
+
+function adjustCornersForPOSIT(corners,width,height) {
+  return corners.map(c => ({
+    x:c.x-width/2,
+    y:height/2-c.y
+  }));
+}
+
+function updateMarkerPose(marker) {
+  const corners = adjustCornersForPOSIT(
+    marker.corners,
+    debugCanvas.width,
+    debugCanvas.height
+  );
+
+  const rawPose = posit.pose(corners);
+
+  const measuredPose = makePoseFromRotationTranslation(
+    rawPose.bestRotation,
+    rawPose.bestTranslation
+  );
+
+  stablePose = updateStablePoseWithKalman(measuredPose);
+
+  lostPoseFrameCount = 0;
+
+  if (!operationManualMode) {
+    applyStablePoseToMarkerRoot();
+  }
+}
+
+function findTargetMarker(markers) {
+  if (!markers || markers.length === 0) {
+    return null;
+  }
+
+  const ids = markers.map(m => m.id).join(", ");
+  const exact = markers.find(
+    m => m.id === TARGET_MARKER_ID
+  );
+
+  if (exact) {
+    updateStatus(`認識中 | 検出ID: ${ids}`);
+    return exact;
+  }
+
+  updateStatus(
+    `警告: ID ${TARGET_MARKER_ID} ではなく ID ${ids} を検出。`
+  );
+
+  return markers[0];
+}
+
+// =========================================================
+// カメラ開始
+// =========================================================
+
+async function startCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video:{
+      facingMode:"environment",
+      width:{ideal:1280},
+      height:{ideal:720}
+    },
+    audio:false
+  });
+
+  video.srcObject = stream;
+
+  await new Promise(resolve => {
+    video.onloadedmetadata = resolve;
+  });
+
+  await video.play();
+
+  debugCanvas.width = video.videoWidth;
+  debugCanvas.height = video.videoHeight;
+
+  const focalLength = debugCanvas.width;
+  posit = new POS.Posit(MARKER_SIZE,focalLength);
+
+  const fov = THREE.MathUtils.radToDeg(
+    2*Math.atan(
+      debugCanvas.height/(2*focalLength)
+    )
+  );
+
+  camera.fov = fov;
+  camera.aspect =
+    window.innerWidth/window.innerHeight;
+
+  camera.updateProjectionMatrix();
+
+  updateStatus(" マーカーを映してください。");
+}
+
+// =========================================================
+// メインループ
+// =========================================================
+
+function animate(timestamp) {
+  requestAnimationFrame(animate);
+
+  // 改善④⑤：速度調整と一時停止
+  if (typeof timestamp === 'number') {
+    if (
+      lastAnimationTimestamp !== null &&
+      currentMode === 'observation' &&
+      !observationPaused
+    ) {
+      const dt = Math.max(
+        0,
+        Math.min(
+          0.05,
+          (timestamp-lastAnimationTimestamp)/1000
+        )
+      );
+
+      observationTime += dt*observationSpeed;
+    }
+
+    lastAnimationTimestamp = timestamp;
+  }
+
+  // 手動切断の赤点の滑らかな移動
+  if (
+    operationManualMode &&
+    manualMarkerTargetPositions.length === 3
+  ) {
+    for (let i = 0; i < 3; i++) {
+      const target = manualMarkerTargetPositions[i];
+
+      if (manualPlaneControlPoints[i]) {
+        manualPlaneControlPoints[i].lerp(
+          target,
+          MANUAL_MARKER_SMOOTHING
+        );
+      }
+    }
+
+    for (let i = 0; i < 3; i++) {
+      const cp = manualPlaneControlPoints[i];
+
+      if (activeMarkersRed[i] && cp) {
+        activeMarkersRed[i].position.lerp(
+          cp,
+          MANUAL_MARKER_SMOOTHING
+        );
+      }
+    }
+  }
+
+  if (
+    video.readyState >= video.HAVE_ENOUGH_DATA &&
+    posit
+  ) {
+    debugCtx.drawImage(
+      video,
+      0,0,
+      debugCanvas.width,
+      debugCanvas.height
+    );
+
+    const imageData = debugCtx.getImageData(
+      0,0,
+      debugCanvas.width,
+      debugCanvas.height
+    );
+
+    const markers = detector.detect(imageData);
+    const marker = findTargetMarker(markers);
+
+    if (marker) {
+      updateMarkerPose(marker);
+
+      if (currentMode === 'operation') {
+        // 改善②：手動切断を自動開始
+        if (!operationManualMode) {
+          enterOperationManualMode();
+        }
+
+        updateOperationMode();
+      } else {
+        updateObservationMode();
+      }
+
+      sortTransparentFacesBackToFront();
+
+    } else {
+      lostPoseFrameCount++;
+
+      const canHoldPose =
+        kalmanEnabled &&
+        lastRenderedStablePose !== null &&
+        lostPoseFrameCount <= LOST_POSE_HOLD_FRAMES;
+
+      if (canHoldPose || operationManualMode) {
+        if (
+          operationManualMode &&
+          manualHoldPose
+        ) {
+          applyPoseToMarkerRoot(manualHoldPose);
+        } else {
+          applyLastRenderedStablePoseToMarkerRoot();
+        }
+
+        if (currentMode === 'operation') {
+          updateOperationMode();
+        } else {
+          updateObservationMode();
+        }
+
+        sortTransparentFacesBackToFront();
+      } else {
+        markerRoot.visible = false;
+        markerVisible = false;
+
+        clearIntersectionDisplay();
+      }
+    }
+  }
+
+  renderer.render(scene,camera);
+}
+
+function onResize() {
+  renderer.setSize(
+    window.innerWidth,
+    window.innerHeight
+  );
+
+  camera.aspect =
+    window.innerWidth/window.innerHeight;
+
+  camera.updateProjectionMatrix();
+}
+
+window.addEventListener('resize',onResize);
+
+// =========================================================
+// 起動
+// =========================================================
+
+(async () => {
+  try {
+    await startCamera();
+    requestAnimationFrame(animate);
+  } catch (e) {
+    console.error(e);
+
+    statusText.innerText =
+      "カメラ起動または js-aruco 初期化に失敗しました: " +
+      e.message;
+  }
+})();
+
+</script>
+</body>
+</html>
+

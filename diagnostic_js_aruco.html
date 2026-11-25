@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>js-aruco Marker Diagnostic</title>
+<style>
+body { margin:0; background:#111; color:white; font-family:sans-serif; }
+video, canvas { position:absolute; top:0; left:0; width:100vw; height:100vh; object-fit:cover; }
+#overlay { pointer-events:none; }
+#status { position:absolute; z-index:3; top:10px; left:10px; right:10px; background:rgba(0,0,0,.75); padding:10px; font-size:18px; }
+#start { position:absolute; z-index:4; top:50%; left:50%; transform:translate(-50%,-50%); font-size:24px; padding:16px; }
+</style>
+<script src="https://cdn.jsdelivr.net/gh/jcmellado/js-aruco@master/src/cv.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/jcmellado/js-aruco@master/src/aruco.js"></script>
+</head>
+<body>
+<video id="video" autoplay playsinline muted></video>
+<canvas id="work" style="display:none"></canvas>
+<canvas id="overlay"></canvas>
+<div id="status">Start を押してください。</div>
+<button id="start">Start Camera</button>
+<script>
+const video = document.getElementById("video");
+const work = document.getElementById("work");
+const overlay = document.getElementById("overlay");
+const wctx = work.getContext("2d", { willReadFrequently:true });
+const octx = overlay.getContext("2d");
+const status = document.getElementById("status");
+const detector = new AR.Detector();
+
+async function start() {
+  document.getElementById("start").style.display = "none";
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode:"environment", width:{ideal:1280}, height:{ideal:720} },
+    audio: false
+  });
+  video.srcObject = stream;
+  await new Promise(r => video.onloadedmetadata = r);
+  await video.play();
+  work.width = video.videoWidth;
+  work.height = video.videoHeight;
+  overlay.width = window.innerWidth;
+  overlay.height = window.innerHeight;
+  loop();
+}
+
+function drawMarker(marker) {
+  const sx = overlay.width / work.width;
+  const sy = overlay.height / work.height;
+  octx.lineWidth = 4;
+  octx.strokeStyle = "lime";
+  octx.beginPath();
+  marker.corners.forEach((c,i) => {
+    const x = c.x * sx;
+    const y = c.y * sy;
+    if (i === 0) octx.moveTo(x,y); else octx.lineTo(x,y);
+  });
+  octx.closePath();
+  octx.stroke();
+  const c0 = marker.corners[0];
+  octx.fillStyle = "red";
+  octx.beginPath();
+  octx.arc(c0.x*sx, c0.y*sy, 8, 0, Math.PI*2);
+  octx.fill();
+  octx.fillStyle = "yellow";
+  octx.font = "24px sans-serif";
+  octx.fillText("ID " + marker.id, c0.x*sx+10, c0.y*sy+10);
+}
+
+function loop() {
+  requestAnimationFrame(loop);
+  if (video.readyState < video.HAVE_ENOUGH_DATA) return;
+  wctx.drawImage(video, 0, 0, work.width, work.height);
+  const imageData = wctx.getImageData(0,0,work.width,work.height);
+  const markers = detector.detect(imageData);
+  octx.clearRect(0,0,overlay.width,overlay.height);
+  markers.forEach(drawMarker);
+  status.textContent = markers.length
+    ? "検出: " + markers.map(m => "ID " + m.id).join(", ")
+    : "検出IDなし。マーカー全体を画面内に入れ、ぼけ・反射を減らしてください。";
+}
+
+document.getElementById("start").onclick = start;
+window.onresize = () => { overlay.width = window.innerWidth; overlay.height = window.innerHeight; };
+</script>
+</body>
+</html>
